@@ -153,6 +153,20 @@ asynStatus drvAHxxx::writeReadMeter()
   return status;
 }
 
+int convert_24_bit_to_int(int x)
+{
+    if (x & 0x800000)
+        x |= ~0xffffff;
+    return x;
+}
+
+int convert_16_bit_to_int(int x)
+{
+    if (x & 0x8000)
+        x |= ~0xffff;
+    return x;
+}
+
 /** Read thread to read the data from the electrometer when it is in continuous acquire mode.
   * Reads the data, computes the sums and positions, and does callbacks.
   */
@@ -217,13 +231,13 @@ void drvAHxxx::readThread(void)
             if (resolution_ == 16) numBytes = 2;
         }
         nRequested = numBytes * numChannels_ * valuesPerRead_;
+        if (ascii_mode) {
+            nRequested = ((resolution_/4)*numChannels_ + (numChannels_-1) + 2) * valuesPerRead_;
+        }
         if (nRequested > inputSize) {
             if (input) free(input);
             input = (unsigned char *)malloc(nRequested);
             inputSize = nRequested;
-        }
-        if (ascii_mode) {
-            nRequested = ((resolution_/4)*numChannels_ + (numChannels_-1) + 2) * valuesPerRead_;
         }
 
         unlock();
@@ -239,22 +253,34 @@ void drvAHxxx::readThread(void)
             offset = 0;
             if (ascii_mode) {
                 int newline_position = ((resolution_/4)*numChannels_ + (numChannels_-1) + 1);
-                if (input[newline_position] == '\n'){
-                    int tmp[4];
-                    switch (numChannels_) {
-                        case 1: sscanf((const char*)input + offset, "%x", &tmp[0]); break;
-                        case 2: sscanf((const char*)input + offset, "%x %x", &tmp[0], &tmp[1]); break;
-                        case 4: sscanf((const char*)input + offset, "%x %x %x %x", &tmp[0], &tmp[1], &tmp[2], &tmp[3]); break;
-                    }
-                    offset += ((resolution_/4)*numChannels_ + (numChannels_-1) + 2);
-                    printf("parsed values: %x %x %x %x\n", tmp[0], tmp[1], tmp[2], tmp[3]);
-                    for(j=0; j<numChannels_; j++) {
-                        raw[j] = tmp[j];
-                    }
-                } else {
-                    printf("newline NOT OK\n  buffer: %.32s", input);
-                    // TODO: read until next newline 
+                while (input[offset+newline_position] != '\n'){
+                    printf("newline char not found at the right place\n");
+                    memmove(input+offset, input+offset+1, nRequested-1);
+                    unlock();
+                    pasynManager->lockPort(pasynUser);
+                    status = pasynOctet->read(octetPvt, pasynUser, (char *)&input[offset+newline_position], 1,
+                                              &nRead, &eomReason);
+                    printf("read: 0x%x\n", input[offset+newline_position]);
+                    pasynManager->unlockPort(pasynUser);
+                    lock();
                 }
+
+                int tmp[4];
+                switch (numChannels_) {
+                    case 1: sscanf((const char*)input + offset, "%x", &tmp[0]); break;
+                    case 2: sscanf((const char*)input + offset, "%x %x", &tmp[0], &tmp[1]); break;
+                    case 4: sscanf((const char*)input + offset, "%x %x %x %x", &tmp[0], &tmp[1], &tmp[2], &tmp[3]); break;
+                }
+                // printf("parsed values: %x %x %x %x\n", tmp[0], tmp[1], tmp[2], tmp[3]);
+                for(j=0; j<numChannels_; j++) {
+                    if (resolution_ == 16)
+                        raw[j] = convert_24_bit_to_int(tmp[j]);
+                    else
+                        raw[j] = convert_16_bit_to_int(tmp[j]);
+                }
+                // printf("raw values: %f %f %f %f\n", raw[0], raw[1], raw[2], raw[3]);
+                offset += ((resolution_/4)*numChannels_ + (numChannels_-1) + 2);
+
             }
             else if (AH401Series_) {
                 // These models are little-endian byte order
