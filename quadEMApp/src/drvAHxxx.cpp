@@ -35,6 +35,9 @@
 static const char *driverName="drvAHxxx";
 static void readThread(void *drvPvt);
 
+// selects between binary and ASCII mode
+static const bool ascii_mode = true;
+
 
 /** Constructor for the drvAHxxx class.
   * Calls the constructor for the drvQuadEM base class.
@@ -219,6 +222,10 @@ void drvAHxxx::readThread(void)
             input = (unsigned char *)malloc(nRequested);
             inputSize = nRequested;
         }
+        if (ascii_mode) {
+            nRequested = ((resolution_/4)*numChannels_ + (numChannels_-1) + 2) * valuesPerRead_;
+        }
+
         unlock();
         pasynManager->lockPort(pasynUser);
         status = pasynOctet->read(octetPvt, pasynUser, (char *)input, nRequested, 
@@ -230,7 +237,26 @@ void drvAHxxx::readThread(void)
                 raw[i] = 0;
             }
             offset = 0;
-            if (AH401Series_) {
+            if (ascii_mode) {
+                int newline_position = ((resolution_/4)*numChannels_ + (numChannels_-1) + 1);
+                if (input[newline_position] == '\n'){
+                    int tmp[4];
+                    switch (numChannels_) {
+                        case 1: sscanf((const char*)input + offset, "%x", &tmp[0]); break;
+                        case 2: sscanf((const char*)input + offset, "%x %x", &tmp[0], &tmp[1]); break;
+                        case 4: sscanf((const char*)input + offset, "%x %x %x %x", &tmp[0], &tmp[1], &tmp[2], &tmp[3]); break;
+                    }
+                    offset += ((resolution_/4)*numChannels_ + (numChannels_-1) + 2);
+                    printf("parsed values: %x %x %x %x\n", tmp[0], tmp[1], tmp[2], tmp[3]);
+                    for(j=0; j<numChannels_; j++) {
+                        raw[j] = tmp[j];
+                    }
+                } else {
+                    printf("newline NOT OK\n  buffer: %.32s", input);
+                    // TODO: read until next newline 
+                }
+            }
+            else if (AH401Series_) {
                 // These models are little-endian byte order
                 for (i=0; i<valuesPerRead_; i++) {
                     for (j=0; j<numChannels_; j++) {
@@ -399,8 +425,13 @@ asynStatus drvAHxxx::setAcquire(epicsInt32 value)
             if ((readStatus == asynTimeout) && (nread == 0)) break;
         }
     } else {
-        // Make sure the meter is in binary mode
-        strcpy(outString_, "BIN ON");
+        // Put the device in the appropriate mode
+        if (ascii_mode) {
+            strcpy(outString_, "BIN OFF");
+        } else {
+            strcpy(outString_, "BIN ON");
+        }
+
         writeReadMeter();
         
         // If we are in one-shot mode then send NAQ to request specific number of samples
