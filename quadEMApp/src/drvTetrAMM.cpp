@@ -422,13 +422,20 @@ asynStatus drvTetrAMM::setAcquire(epicsInt32 value)
             epicsThreadSleep(0.01);
             lock();
         }
+
+        status = pasynOctetSyncIO->writeRead(pasynUserMeter_, "ACQ:OFF", strlen("ACQ:OFF"),
+            response, sizeof(response), TetrAMM_TIMEOUT, &nwrite, &nread, &eomReason);
+        if ((status == asynSuccess) && (nread==3) && (strcmp(response, "ACK") == 0)) goto skip_while;
+        asynPrint(pasynUserSelf, ASYN_TRACEIO_DRIVER,
+            "%s::%s readStatus=%d, nread=%lu, response=%s\n",
+            driverName, functionName, status, (unsigned long)nread, response);
+
         while (1) {
-            status = pasynOctetSyncIO->writeRead(pasynUserMeter_, "ACQ:OFF", strlen("ACQ:OFF"), 
-                response, sizeof(response), TetrAMM_TIMEOUT, &nwrite, &nread, &eomReason);
-            if ((status == asynSuccess) && (nread==3) && (strcmp(response, "ACK") == 0)) break;
-            asynPrint(pasynUserSelf, ASYN_TRACEIO_DRIVER, 
-                "%s::%s readStatus=%d, nread=%lu, response=%s\n", 
-                driverName, functionName, status, (unsigned long)nread, response);
+            // wait for TetrAMM to stop sending data
+            status = pasynOctetSyncIO->read(pasynUserMeter_, response, MAX_COMMAND_LEN, TetrAMM_TIMEOUT, &nread, &eomReason);
+            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "status: %d\n", status);
+            if (status == asynTimeout)
+                break;
         }
     } else {
         // Set the desired read format
@@ -472,6 +479,8 @@ asynStatus drvTetrAMM::setAcquire(epicsInt32 value)
         epicsEventSignal(acquireStartEvent_);
         acquiring_ = 1;
     }
+skip_while:
+
     if (status) {
         acquiring_ = 0;
     }
